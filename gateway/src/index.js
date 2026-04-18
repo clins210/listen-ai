@@ -1,3 +1,14 @@
+// 在檔案頂部加上 cache
+const cache = new Map();
+const CACHE_TTL_MS = 5 * 60 * 1000; // 5 分鐘
+
+// 產生 cache key 的函式
+function makeCacheKey(body) {
+  const { includeKeywords = [], excludeKeywords = [], fromDate = "", toDate = "", sampleSize = 5 } = body;
+  return JSON.stringify({ includeKeywords: [...includeKeywords].sort(), excludeKeywords: [...excludeKeywords].sort(), fromDate, toDate, sampleSize });
+}
+
+
 const express = require("express");
 const cors = require("cors");
 const jwt = require("jsonwebtoken");
@@ -49,14 +60,25 @@ app.post("/auth/login", (req, res) => {
   return res.json({ token });
 });
 
+// 修改 /api/dashboard
 app.post("/api/dashboard", authMiddleware, async (req, res) => {
+  const body = req.body || {};
+  const cacheKey = makeCacheKey(body);
+
+  // 檢查 cache
+  const cached = cache.get(cacheKey);
+  if (cached && Date.now() - cached.timestamp < CACHE_TTL_MS) {
+    console.log("Cache hit:", cacheKey);
+    return res.json({ ...cached.data, fromCache: true });
+  }
+
   const {
     includeKeywords = [],
     excludeKeywords = [],
     fromDate = "",
     toDate = "",
     sampleSize = 5,
-  } = req.body || {};
+  } = body;
 
   try {
     const statResp = await axios.post(`${statUrl}/stats`, {
@@ -83,14 +105,20 @@ app.post("/api/dashboard", authMiddleware, async (req, res) => {
 
     const examples = classifiedPosts.slice(0, sampleSize);
 
-    return res.json({
+    const result = {
       sentimentPercentage: sentimentData.sentiment_percentage,
       topKeywords: stats.top_keywords || [],
       trends: stats.trends || [],
       examplePosts: examples,
       mentionCount: stats.mention_count || 0,
       totalAnalyzedPosts: classifiedPosts.length,
-    });
+    };
+
+    // 存入 cache
+    cache.set(cacheKey, { data: result, timestamp: Date.now() });
+    console.log("Cache miss, stored:", cacheKey);
+
+    return res.json(result);
   } catch (err) {
     const detail = err.response?.data || err.message;
     return res.status(500).json({
